@@ -8,6 +8,8 @@ struct MacSettingsView: View {
     @State private var confirmDelete = false
     @State private var movingExport = false
     @AppStorage("henge.cpus") private var cpus = 4
+    @State private var customWidthText = ""
+    @State private var customHeightText = ""
 
     init(mac: VirtualMac) { _mac = State(initialValue: mac) }
 
@@ -74,52 +76,8 @@ struct MacSettingsView: View {
                 .padding(17)
                 .deskCard()
 
-                if Device.fittingScreen.height != 1080 {
-                    DeskHeading("Screen")
-                    VStack(alignment: .leading, spacing: 12) {
-                        Picker("Screen", selection: Binding(get: {
-                            if mac.isRetina { return "retina" }
-                            if mac.screen.width == Device.performanceScreen.width,
-                               mac.screen.height == Device.performanceScreen.height { return "performance" }
-                            if mac.screen.width == 1920, mac.screen.height == 1080 { return "wide" }
-                            return "fit"
-                        }, set: { choice in
-                            mac.retina = choice == "retina"
-                            switch choice {
-                            case "retina": break
-                            case "performance": (mac.screenWidth, mac.screenHeight) = Device.performanceScreen
-                            case "wide": (mac.screenWidth, mac.screenHeight) = (1920, 1080)
-                            default: (mac.screenWidth, mac.screenHeight) = Device.fitting(for: mac)
-                            }
-                            save()
-                        })) {
-                            if Device.isPad {
-                                Text("Retina").tag("retina")
-                                Text("Performance").tag("performance")
-                            }
-                            Text("Fit this \(Device.name)").tag("fit")
-                            Text("16:9").tag("wide")
-                        }
-                        .pickerStyle(.segmented)
-                        if Device.largeScreen {
-                            Toggle("Fill the whole screen", isOn: Binding(get: { mac.fillScreen ?? true }, set: { fill in
-                                mac.fillScreen = fill
-                                if !(mac.screen.width == 1920 && mac.screen.height == 1080) {
-                                    (mac.screenWidth, mac.screenHeight) = Device.fitting(for: mac)
-                                }
-                                save()
-                            }))
-                            Text("Off leaves a strip at the right for the time, battery and Wi-Fi, with Henge's controls under them.")
-                                .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                        }
-                        Text("\(mac.screen.width) × \(mac.screen.height). \(Device.isPad ? "Performance renders about 30% fewer pixels. " : "Fit follows the screen this Mac starts on. ")Changes apply the next time this Mac starts.")
-                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    }
-                    .padding(17)
-                    .deskCard()
-                    // A Mac fitted to another screen (an iPhone Duo's other one) shows the size it will start with.
-                    .onAppear { mac = machines.fittedForStart(mac) }
-                }
+                DeskHeading("Screen")
+                screen
 
                 DeskHeading("Storage")
                 VStack(spacing: 11) {
@@ -201,6 +159,102 @@ struct MacSettingsView: View {
             .padding(.vertical, 14)
             .contentShape(Rectangle())
         }
+    }
+
+    /// The Mac's screen: what it looks like (the fit, smaller sizes in the same shape, 16:9 or any size), whether it
+    /// renders at 2x, and on an iPhone Duo unfolded, whether it fills the screen.
+    private var screen: some View {
+        let fit = Device.fitting(for: mac)
+        let presets = Device.presets(for: fit)
+        let fitIsWide = fit == (width: 1920, height: 1080)
+        var choices = presets.map(\.choice) + ["fit", "custom"]
+        if !fitIsWide { choices.append("wide") }
+        if Device.isPad { choices += ["retina", "performance"] }
+        let current = choices.contains(mac.effectiveScreenChoice) ? mac.effectiveScreenChoice : "fit"
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Looks like").font(.system(size: 16))
+                Spacer()
+                Picker("Looks like", selection: Binding(get: { current }, set: { setScreenChoice($0) })) {
+                    ForEach(presets, id: \.choice) { p in Text("\(p.width) × \(p.height)").tag(p.choice) }
+                    Text("\(fit.width) × \(fit.height) (fits this \(Device.name))").tag("fit")
+                    if !fitIsWide { Text("1920 × 1080 (16:9)").tag("wide") }
+                    if Device.isPad {
+                        Text("Retina").tag("retina")
+                        Text("Performance").tag("performance")
+                    }
+                    Text("Custom…").tag("custom")
+                }
+                .pickerStyle(.menu)
+            }
+            if current == "custom" {
+                HStack(spacing: 8) {
+                    TextField("Width", text: $customWidthText).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                    Text("×").foregroundStyle(Desk.dim)
+                    TextField("Height", text: $customHeightText).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                    Button("Set", action: applyCustom).buttonStyle(.borderedProminent)
+                }
+                Text("Any size from 800 × 600 to \((mac.sharp ?? false) ? "1920 × 1440" : "3840 × 2880"), in steps of 8.")
+                    .font(.system(size: 13)).foregroundStyle(Desk.dim)
+            }
+            if !mac.isPadRetina {
+                Toggle("Sharp (HiDPI)", isOn: Binding(get: { mac.sharp ?? false }, set: {
+                    mac.sharp = $0
+                    mac.applyScreen()
+                    syncCustomFields()
+                    save()
+                })).font(.system(size: 16))
+                Text("Renders twice as many pixels each way so macOS draws at 2x: sharper, but about four times the work for the virtual GPU.")
+                    .font(.system(size: 13)).foregroundStyle(Desk.dim)
+            }
+            if Device.largeScreen {
+                Toggle("Fill the whole screen", isOn: Binding(get: { mac.fillScreen ?? true }, set: { fill in
+                    mac.fillScreen = fill
+                    mac.applyScreen()
+                    save()
+                })).font(.system(size: 16))
+                Text("Off leaves a strip at the right for the time, battery and Wi-Fi, with Henge's controls under them.")
+                    .font(.system(size: 13)).foregroundStyle(Desk.dim)
+            }
+            Text("Renders \(mac.screen.width) × \(mac.screen.height). The fit and the sizes above it follow the screen this Mac starts on. Changes apply the next time this Mac starts\(InstantResume.hasSave(for: mac) ? "; its saved session will not be resumed" : "").")
+                .font(.system(size: 13)).foregroundStyle(Desk.dim)
+        }
+        .padding(17)
+        .deskCard()
+        // A Mac fitted to another screen (an iPhone Duo's other one) shows the size it will start with.
+        .onAppear {
+            mac = machines.fittedForStart(mac)
+            syncCustomFields()
+        }
+    }
+
+    private func setScreenChoice(_ choice: String) {
+        if choice == "custom", mac.customWidth == nil {
+            let now = Device.looksLike(for: mac) // start from what it looks like now
+            (mac.customWidth, mac.customHeight) = (now.width, now.height)
+        }
+        mac.retina = choice == "retina"
+        mac.screenChoice = choice
+        mac.applyScreen()
+        syncCustomFields()
+        save()
+    }
+
+    private func applyCustom() {
+        guard let w = Int(customWidthText), let h = Int(customHeightText) else { syncCustomFields(); return }
+        let s = Device.clampCustom(w, h, sharp: mac.sharp ?? false)
+        (mac.customWidth, mac.customHeight) = (s.width, s.height)
+        mac.screenChoice = "custom"
+        mac.applyScreen()
+        syncCustomFields()
+        save()
+    }
+
+    /// The custom fields show the size a custom screen looks like (clamped, as it will be used).
+    private func syncCustomFields() {
+        let fit = Device.fitting(for: mac)
+        let s = Device.clampCustom(mac.customWidth ?? fit.width, mac.customHeight ?? fit.height, sharp: mac.sharp ?? false)
+        (customWidthText, customHeightText) = ("\(s.width)", "\(s.height)")
     }
 
     private func save() {

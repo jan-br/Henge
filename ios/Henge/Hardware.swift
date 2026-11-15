@@ -52,6 +52,61 @@ enum Device {
         return fitting(size)
     }
 
+    /// "Looks like" sizes offered besides the fit (which is the 1920 one): the fit scaled down, so each keeps the shape
+    /// of the space the Mac gets. Smaller is a larger UI and less for the virtual GPU to draw.
+    static let presetWidths = [1024, 1280, 1440, 1600]
+
+    static func round8(_ v: Double) -> Int { max(Int((v / 8).rounded()) * 8, 8) }
+
+    /// The fit scaled to a preset width (1920 = the fit itself).
+    static func scaled(_ fit: (width: Int, height: Int), toWidth w: Int) -> (width: Int, height: Int) {
+        let f = Double(w) / 1920
+        return (round8(Double(fit.width) * f), round8(Double(fit.height) * f))
+    }
+
+    /// The presets for a fit, smallest first, without sizes that come out the same as another or as the fit.
+    struct ScreenPreset: Hashable {
+        let choice: String
+        let width: Int
+        let height: Int
+    }
+
+    static func presets(for fit: (width: Int, height: Int)) -> [ScreenPreset] {
+        var out: [ScreenPreset] = []
+        for w in presetWidths {
+            let s = scaled(fit, toWidth: w)
+            if s == fit || out.contains(where: { $0.width == s.width && $0.height == s.height }) { continue }
+            out.append(ScreenPreset(choice: "w\(w)", width: s.width, height: s.height))
+        }
+        return out
+    }
+
+    /// A custom "looks like" size, in a multiple of 8 and within what macOS and the virtual GPU take. Sharp renders
+    /// twice each way, so it stops at half the size.
+    static func clampCustom(_ w: Int, _ h: Int, sharp: Bool) -> (width: Int, height: Int) {
+        let maxW = sharp ? 1920 : 3840, maxH = sharp ? 1440 : 2880
+        return (min(max(round8(Double(w)), 800), maxW), min(max(round8(Double(h)), 600), maxH))
+    }
+
+    /// The size a Mac looks like, from its screen choice (see VirtualMac.screenChoice), for the space it gets now.
+    static func looksLike(for mac: VirtualMac) -> (width: Int, height: Int) {
+        let fit = fitting(for: mac)
+        let choice = mac.effectiveScreenChoice
+        switch choice {
+        case "wide": return (1920, 1080)
+        case "performance": return performanceScreen
+        case "custom": return clampCustom(mac.customWidth ?? fit.width, mac.customHeight ?? fit.height, sharp: mac.sharp ?? false)
+        default:
+            if choice.hasPrefix("w"), let w = Int(choice.dropFirst()), presetWidths.contains(w) { return scaled(fit, toWidth: w) }
+            return fit
+        }
+    }
+
+    /// A panel's size in mm at 264 ppi, the density at which macOS draws at 2x.
+    static func mm(forPixels s: (width: Int, height: Int)) -> (width: Int, height: Int) {
+        (Int((Double(s.width) / 264 * 25.4).rounded()), Int((Double(s.height) / 264 * 25.4).rounded()))
+    }
+
     /// Preserve the iPad's shape while reducing the virtual GPU's pixel work.
     static var performanceScreen: (width: Int, height: Int) {
         let fit = fittingScreen
@@ -65,10 +120,7 @@ enum Device {
         let n = UIScreen.main.nativeBounds.size
         return (Int(max(n.width, n.height)) / 8 * 8, Int(min(n.width, n.height)) / 8 * 8)
     }
-    static var retinaMM: (width: Int, height: Int) {
-        let s = retinaScreen
-        return (Int((Double(s.width) / 264 * 25.4).rounded()), Int((Double(s.height) / 264 * 25.4).rounded()))
-    }
+    static var retinaMM: (width: Int, height: Int) { mm(forPixels: retinaScreen) }
 
     /// How much memory to suggest for a new Mac: what leaves this device room for iOS.
     static var suggestedRAMGB: Int {

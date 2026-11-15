@@ -27,8 +27,35 @@ struct VirtualMac: Identifiable, Codable, Hashable {
     /// With reportHostIdentity: also report the device's model identifier (hw.model).
     /// Experimental — it may bring the device's icon, and may confuse macOS.
     var reportHostModelID: Bool?
-    var isRetina: Bool { Device.isPad && (retina ?? false) }
-    var screen: (width: Int, height: Int) { isRetina ? Device.retinaScreen : (screenWidth ?? 1920, screenHeight ?? 1080) }
+    /// The screen's size as a choice: "fit" (the default: fills the screen this Mac starts on), "w1024" … "w1600"
+    /// (the fit scaled to that width), "custom" (customWidth × customHeight), "wide" (1920 × 1080) or, on iPad,
+    /// "performance". nil: a Mac from before this was a choice, read from its size (effectiveScreenChoice).
+    var screenChoice: String?
+    var customWidth: Int?
+    var customHeight: Int?
+    /// Render at twice the "looks like" size and tell macOS the panel is Retina-dense, so it draws at 2x.
+    var sharp: Bool?
+    var isPadRetina: Bool { Device.isPad && (retina ?? false) }
+    /// macOS is told a Retina-dense panel: the iPad's own, or a sharp screen.
+    var isRetina: Bool { isPadRetina || (sharp ?? false) }
+    /// What the engine is given: the rendered size (twice the "looks like" size when sharp).
+    var screen: (width: Int, height: Int) { isPadRetina ? Device.retinaScreen : (screenWidth ?? 1920, screenHeight ?? 1080) }
+
+    var effectiveScreenChoice: String {
+        if let screenChoice { return screenChoice }
+        if isPadRetina { return "retina" }
+        let s: (width: Int, height: Int) = (screenWidth ?? 1920, screenHeight ?? 1080)
+        if Device.isPad, s == Device.performanceScreen { return "performance" }
+        if s == (width: 1920, height: 1080) { return "wide" }
+        return "fit"
+    }
+
+    /// Sets the rendered size from the choice, for the space this Mac gets now. The iPad's Retina uses the panel.
+    mutating func applyScreen() {
+        guard !isPadRetina else { return }
+        let s = Device.looksLike(for: self), k = (sharp ?? false) ? 2 : 1
+        (screenWidth, screenHeight) = (s.width * k, s.height * k)
+    }
     var aspect: CGFloat { CGFloat(screen.width) / CGFloat(screen.height) }
 
     var directory: URL { Machines.directory(for: id) }
@@ -288,14 +315,13 @@ final class Machines: ObservableObject {
     /// (MacSettingsView). A Mac with a saved session keeps its size, which the save is for; an iPad has one panel.
     func fittedForStart(_ mac: VirtualMac) -> VirtualMac {
         guard !Device.isPad, !InstantResume.hasSave(for: mac) else { return mac }
-        let fit = Device.fitting(for: mac)
-        let now = mac.screen
-        // Only where a fit is not 16:9, which is an iPhone Duo's two screens: any other iPhone keeps what a Mac has.
-        guard !(fit.width == 1920 && fit.height == 1080),
-              !(now.width == 1920 && now.height == 1080), !(now.width == fit.width && now.height == fit.height) else { return mac }
+        // The fit and its scaled presets follow the screen this Mac starts on (an iPhone Duo's two); a custom size
+        // and 16:9 stay as chosen, since they come out the same.
         var fitted = mac
-        (fitted.screenWidth, fitted.screenHeight) = fit
-        HengeLog.log("session", "screen \(mac.screen.width)x\(mac.screen.height) refitted to this display: \(fit.width)x\(fit.height)")
+        fitted.applyScreen()
+        let now = mac.screen, new = fitted.screen
+        guard now != new else { return mac }
+        HengeLog.log("session", "screen \(now.width)x\(now.height) refitted to this display: \(new.width)x\(new.height)")
         update(fitted)
         return fitted
     }
