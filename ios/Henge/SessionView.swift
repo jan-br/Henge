@@ -83,9 +83,9 @@ struct SessionView: View {
                         }
                     }
                     .frame(width: layout.screen.width, height: layout.screen.height)
-                    .clipShape(RoundedRectangle(cornerRadius: layout.fillsPhone ? 0 : 15, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: layout.fillsPhone || layout.flush ? 0 : 15, style: .continuous))
                     .overlay {
-                        if !layout.fillsPhone {
+                        if !layout.fillsPhone && !layout.flush {
                             RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 0.5)
                         }
                     }
@@ -172,8 +172,8 @@ struct SessionView: View {
                              + "\(Int(layout.screen.width))x\(Int(layout.screen.height)), fill \(mac.fillScreen ?? true)")
             }
             .onChange(of: layout.shown) { shown = $0 }
-            .onChange(of: layout.sideKeys != nil) { ModifierRow.onSide = $0 }
-            .onAppear { ModifierRow.onSide = layout.sideKeys != nil }
+            .onChange(of: layout.keyRow != nil) { ModifierRow.onSide = $0 }
+            .onAppear { ModifierRow.onSide = layout.keyRow != nil }
             .onDisappear { ModifierRow.onSide = false }
             .onChange(of: fold) { new in
                 HengeLog.log("session", "fold \(new.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "none") in "
@@ -198,7 +198,9 @@ struct SessionView: View {
         // An iPhone's large screen (iPhone Duo unfolded: regular both ways) keeps its status bar on its side too,
         // over the Mac's menu bar extras: a Mac that fills the screen hides it, one with a side strip has it there.
         // Held as a book the status bar would take the top of the Mac's page.
-        .statusBarHidden(zoomed || Device.isPad || (onLargeScreen && (mac.fillScreen ?? true)) || fold != nil)
+        // Upright on an iPhone Duo's inner screen the Mac is against the top edge.
+        .statusBarHidden(zoomed || Device.isPad || (onLargeScreen && (mac.fillScreen ?? true)) || fold != nil
+                         || (onLargeScreen && Device.screenSize.height > Device.screenSize.width))
         .persistentSystemOverlays(.hidden)
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
@@ -271,7 +273,8 @@ struct SessionView: View {
         let insets: EdgeInsets
         var barY: CGFloat?    // where the controls go in the space beside the screen, if it has room for them
         var sideX: CGFloat?   // where they go as a column, in the strip a Mac leaves at the right of a large screen
-        var sideKeys: CGRect? // the keys and mouse buttons as a column beside the Mac (an iPhone Duo as a book, typing)
+        var flush = false     // the Mac against the screen's edges, without a rounded frame
+        var keyRow: CGRect?   // the Mac keys and mouse buttons, placed here instead of on the keyboard (iPhone Duo folded, typing)
 
         /// Where a card (stopped, error) goes: on the trackpad, or the Mac's screen when there is none.
         var card: CGPoint {
@@ -332,29 +335,32 @@ struct SessionView: View {
                 fillsPhone = true
                 toolsY = 0
                 pad = .zero
-            } else if let fold, fold.width > fold.height, fold.minY > insets.top + 100 {
-                // Upright and folded across, like a laptop (an iPhone Duo): the Mac on the upper page, and the
-                // controls, trackpad and keyboard on the lower one. Nothing to touch in the fold itself.
-                // Typing, iOS gives its keyboard the whole lower page and the fold, so the keys that are usually above
-                // it go down the side of the Mac, with the mouse buttons; the Mac itself is the trackpad.
-                let keyboardTop = full.height - insets.bottom
-                let upperBottom = min(fold.minY, keyboardTop) - 6
-                let room = max(upperBottom - insets.top - 6, 120)
-                let column: CGFloat = typing ? 46 : 0
-                let across = full.width - 16 - (typing ? column + 6 : 0)
-                let height = min(across / aspect, room)
+            } else if !Device.isPad, min(full.width, full.height) >= 600 {
+                // An iPhone Duo's inner screen upright, flat or folded like a laptop: the upper half is the Mac
+                // alone, against the top and sides; everything else is on the lower half. Folded, the Mac may go
+                // into the fold's margin as far as the crease (nothing there is touched but the Mac, which is the
+                // trackpad).
+                let crease = fold?.midY ?? full.height / 2
+                let height = min(full.width / aspect, crease - 2)
                 let width = height * aspect
-                screen = CGRect(x: 8 + (across - width) / 2, y: insets.top + 6 + (room - height) / 2, width: width, height: height)
-                if typing { sideKeys = CGRect(x: full.width - 8 - column, y: insets.top + 6, width: column, height: room) }
+                screen = CGRect(x: (full.width - width) / 2, y: 0, width: width, height: height)
+                flush = true
                 touch = screen
                 fillsPhone = false
                 toolsHeight = 44
-                let lower = fold.maxY + 4
+                let lower = max(screen.maxY, fold?.maxY ?? 0) + 6
                 toolsY = lower
-                let top = typing ? lower : lower + toolsHeight + 8
-                let bottom = (typing ? keyboardTop : full.height - insets.bottom) - 6
-                // Too little room above the keyboard for a trackpad to be of use: none, rather than a sliver.
-                pad = bottom - top >= 70 ? CGRect(x: 8, y: top, width: full.width - 16, height: bottom - top) : .zero
+                if typing, let fold {
+                    // Folded, iOS gives its keyboard the lower page and says it reaches the fold, though its keys
+                    // start about 60 points below it (measured on the device): the row goes in that gap, rather
+                    // than above the keyboard, where iOS would put it on the upper page. No room for a trackpad.
+                    keyRow = CGRect(x: 6, y: fold.maxY + 4, width: full.width - 12, height: 44)
+                    pad = .zero
+                } else {
+                    let top = typing ? lower : lower + toolsHeight + 8
+                    let bottom = full.height - insets.bottom - 6 // typing, above the keyboard and its row
+                    pad = bottom - top >= 70 ? CGRect(x: 8, y: top, width: full.width - 16, height: bottom - top) : .zero
+                }
             } else {
                 let width = full.width - 16
                 let height = width / aspect
@@ -371,16 +377,19 @@ struct SessionView: View {
 
     // MARK: Upright
 
-    /// The keys usually above the keyboard, and the mouse buttons, down the side of the Mac.
-    @ViewBuilder private func sideKeys(_ layout: Layout) -> some View {
-        if typing, let r = layout.sideKeys {
-            VStack(spacing: 5) {
-                ModifierRow(hide: { typing = false }, vertical: true)
+    /// The keys usually above the keyboard, with the mouse buttons, where the layout puts them instead.
+    @ViewBuilder private func keyRow(_ layout: Layout) -> some View {
+        if typing, let r = layout.keyRow {
+            HStack(spacing: 5) {
+                ModifierRow(hide: { typing = false })
+                    .padding(.horizontal, -6)
                 MouseButton(title: "click", button: 0)
                     .background(Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .frame(width: 52)
                     .accessibilityLabel("Click")
                 MouseButton(title: "right", button: 1)
                     .background(Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .frame(width: 52)
                     .accessibilityLabel("Right-click")
             }
             .frame(width: r.width, height: r.height)
@@ -411,7 +420,7 @@ struct SessionView: View {
             .transition(.opacity)
         }
         trackpadPanel(layout)
-        sideKeys(layout)
+        keyRow(layout)
     }
 
     @ViewBuilder private func trackpadPanel(_ layout: Layout) -> some View {
