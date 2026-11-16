@@ -55,7 +55,7 @@ enum Device {
     /// Scales offered besides the fit (100%), as a percentage of it: each keeps the shape of the space the Mac gets, so
     /// it means the same on an iPhone Duo's two screens and either way up. Smaller is a larger UI and less for the
     /// virtual GPU to draw; 50% is exactly half the fit's pixels each way.
-    static let scalePercents = [90, 80, 75, 67, 50]
+    static let scalePercents = [90, 80, 75, 67, 50, 40, 33, 25]
 
     static func round8(_ v: Double) -> Int { max(Int((v / 8).rounded()) * 8, 8) }
 
@@ -92,7 +92,7 @@ enum Device {
     /// twice each way, so it stops at half the size.
     static func clampCustom(_ w: Int, _ h: Int, sharp: Bool) -> (width: Int, height: Int) {
         let maxW = sharp ? 1920 : 3840, maxH = sharp ? 1440 : 2880
-        return (min(max(round8(Double(w)), 800), maxW), min(max(round8(Double(h)), 600), maxH))
+        return (min(max(round8(Double(w)), 480), maxW), min(max(round8(Double(h)), 320), maxH))
     }
 
     /// The size a Mac looks like, from its screen choice (see VirtualMac.screenChoice), for the space it gets now.

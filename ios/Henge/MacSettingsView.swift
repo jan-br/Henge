@@ -196,7 +196,7 @@ struct MacSettingsView: View {
                     TextField("Height", text: $customHeightText).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
                     Button("Set", action: applyCustom).buttonStyle(.borderedProminent)
                 }
-                Text("Any size from 800 × 600 to \((mac.sharp ?? false) ? "1920 × 1440" : "3840 × 2880"), in steps of 8.")
+                Text("Any size from 480 × 320 to \((mac.sharp ?? false) ? "1920 × 1440" : "3840 × 2880"), in steps of 8.")
                     .font(.system(size: 13)).foregroundStyle(Desk.dim)
             }
             if !mac.isPadRetina {
@@ -218,7 +218,7 @@ struct MacSettingsView: View {
                 Text("Off leaves a strip at the right for the time, battery and Wi-Fi, with Henge's controls under them.")
                     .font(.system(size: 13)).foregroundStyle(Desk.dim)
             }
-            Text("Looks like \(Device.looksLike(for: mac).width) × \(Device.looksLike(for: mac).height)\((mac.sharp ?? false) ? ", renders \(mac.screen.width) × \(mac.screen.height)" : "") here. A scale is of the screen this Mac starts on, so it keeps its shape on either screen and either way up. Changes apply the next time this Mac starts\(InstantResume.hasSave(for: mac) ? "; its saved session will not be resumed" : "").")
+            Text("Looks like \(Device.looksLike(for: mac).width) × \(Device.looksLike(for: mac).height)\((mac.sharp ?? false) ? ", renders \(mac.screen.width) × \(mac.screen.height)" : "") here. A scale is of the screen this Mac starts on, so it keeps its shape on either screen and either way up. For a larger UI, choose a smaller scale here rather than a scaled resolution in macOS's Displays settings: macOS's own scaling puts the pointer off where it clicks. Changes apply the next time this Mac starts\(InstantResume.hasSave(for: mac) ? "; its saved session will not be resumed" : "").")
                 .font(.system(size: 13)).foregroundStyle(Desk.dim)
         }
         .padding(17)
