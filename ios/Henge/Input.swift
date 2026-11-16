@@ -98,6 +98,7 @@ struct KeyboardCatcher: UIViewRepresentable {
         var spellCheckingType: UITextSpellCheckingType = .no
         var smartQuotesType: UITextSmartQuotesType = .no
         var smartDashesType: UITextSmartDashesType = .no
+        var inlinePredictionType: UITextInlinePredictionType = .no
 
         /// macOS's layout follows the on-screen keyboard's language, now and as it is switched.
         private var followingKeyboard = false
@@ -113,6 +114,10 @@ struct KeyboardCatcher: UIViewRepresentable {
         }
 
         override func becomeFirstResponder() -> Bool {
+            // No shortcut bar (undo, redo, paste) on the iPad-style keyboard an iPhone Duo's inner screen gets: on its
+            // lower page every point counts, and the Mac has its own.
+            inputAssistantItem.leadingBarButtonGroups = []
+            inputAssistantItem.trailingBarButtonGroups = []
             let became = super.becomeFirstResponder()
             if became { KeyboardLayout.follow(language: textInputMode?.primaryLanguage) }
             return became

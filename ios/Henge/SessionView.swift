@@ -52,6 +52,7 @@ struct SessionView: View {
     @State private var shown = CGSize(width: 0.5, height: 0.5) // how much of the Mac's screen the zoomed view shows
     @Environment(\.scenePhase) private var scenePhase
     @State private var hingeChanges = 0 // a new layout as an iPhone Duo folds or opens
+    @State private var fold: CGRect?     // an iPhone Duo's fold while partly folded, in the device's points
 
 
     var body: some View {
@@ -60,7 +61,6 @@ struct SessionView: View {
             let full = CGSize(width: geo.size.width + insets.leading + insets.trailing,
                               height: geo.size.height + insets.top + insets.bottom)
             let landscape = full.width > full.height
-            let fold = Self.fold(geo, insets, hingeChanges)
             let layout = Layout(full: full, insets: insets, landscape: landscape, zoomed: zoomed, typing: typing, centre: zoomCentre, aspect: mac.aspect,
                                 strip: !Device.isPad && !(mac.fillScreen ?? true) ? Device.sideStrip : 0, fold: fold)
             ZStack(alignment: .topLeading) {
@@ -176,11 +176,26 @@ struct SessionView: View {
                 HengeLog.log("session", "fold \(new.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "none") in "
                              + "\(Int(full.width))x\(Int(full.height)), insets top \(Int(insets.top)) bottom \(Int(insets.bottom))")
             }
+            .onChange(of: insets.bottom) { bottom in
+                if typing { HengeLog.log("session", "keyboard: bottom inset \(Int(bottom)) of \(Int(full.height)), fold \(fold.map { "\(Int($0.minY))-\(Int($0.maxY))" } ?? "none")") }
+            }
+        }
+        // The fold, from a view over the whole screen: the session's own space ends above the keyboard, and iOS
+        // reports only the regions in the view that asks, so with the keyboard up it would not see the fold.
+        .background {
+            GeometryReader { whole in
+                let found = Self.fold(whole, hingeChanges)
+                Color.clear
+                    .onAppear { fold = found }
+                    .onChange(of: found) { fold = $0 }
+            }
+            .ignoresSafeArea()
         }
         .relayoutOnHinge($hingeChanges)
         // An iPhone's large screen (iPhone Duo unfolded: regular both ways) keeps its status bar on its side too,
         // over the Mac's menu bar extras: a Mac that fills the screen hides it, one with a side strip has it there.
-        .statusBarHidden(zoomed || Device.isPad || (onLargeScreen && (mac.fillScreen ?? true)))
+        // Held as a book the status bar would take the top of the Mac's page.
+        .statusBarHidden(zoomed || Device.isPad || (onLargeScreen && (mac.fillScreen ?? true)) || fold != nil)
         .persistentSystemOverlays(.hidden)
         .sheet(isPresented: $showDetails) { details }
         .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
@@ -236,11 +251,10 @@ struct SessionView: View {
 
     /// An iPhone Duo's fold while it is partly folded (iOS 27.1's division region, margins included), in the
     /// device's points from its top left like everything in Layout; nil when flat, closed or on any other device.
-    private static func fold(_ geo: GeometryProxy, _ insets: EdgeInsets, _ hingeChanges: Int) -> CGRect? {
+    private static func fold(_ whole: GeometryProxy, _ hingeChanges: Int) -> CGRect? {
         _ = hingeChanges // read again whenever the hinge moves
         guard #available(iOS 27.1, *) else { return nil }
-        guard let region = geo.reservedRegions(kind: .division).first else { return nil }
-        return region.frame.offsetBy(dx: insets.leading, dy: insets.top) // the reader's own space is inside the safe area
+        return whole.reservedRegions(kind: .division).first?.frame // the reader covers the screen: its space is the device's
     }
 
     /// Where everything goes, in points from the device's top left corner.
