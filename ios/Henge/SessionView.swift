@@ -172,6 +172,9 @@ struct SessionView: View {
                              + "\(Int(layout.screen.width))x\(Int(layout.screen.height)), fill \(mac.fillScreen ?? true)")
             }
             .onChange(of: layout.shown) { shown = $0 }
+            .onChange(of: layout.sideKeys != nil) { ModifierRow.onSide = $0 }
+            .onAppear { ModifierRow.onSide = layout.sideKeys != nil }
+            .onDisappear { ModifierRow.onSide = false }
             .onChange(of: fold) { new in
                 HengeLog.log("session", "fold \(new.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "none") in "
                              + "\(Int(full.width))x\(Int(full.height)), insets top \(Int(insets.top)) bottom \(Int(insets.bottom))")
@@ -268,6 +271,7 @@ struct SessionView: View {
         let insets: EdgeInsets
         var barY: CGFloat?    // where the controls go in the space beside the screen, if it has room for them
         var sideX: CGFloat?   // where they go as a column, in the strip a Mac leaves at the right of a large screen
+        var sideKeys: CGRect? // the keys and mouse buttons as a column beside the Mac (an iPhone Duo as a book, typing)
 
         /// Where a card (stopped, error) goes: on the trackpad, or the Mac's screen when there is none.
         var card: CGPoint {
@@ -331,12 +335,17 @@ struct SessionView: View {
             } else if let fold, fold.width > fold.height, fold.minY > insets.top + 100 {
                 // Upright and folded across, like a laptop (an iPhone Duo): the Mac on the upper page, and the
                 // controls, trackpad and keyboard on the lower one. Nothing to touch in the fold itself.
-                let keyboardTop = full.height - insets.bottom // with the keyboard up, its top (key row included)
+                // Typing, iOS gives its keyboard the whole lower page and the fold, so the keys that are usually above
+                // it go down the side of the Mac, with the mouse buttons; the Mac itself is the trackpad.
+                let keyboardTop = full.height - insets.bottom
                 let upperBottom = min(fold.minY, keyboardTop) - 6
                 let room = max(upperBottom - insets.top - 6, 120)
-                let height = min((full.width - 16) / aspect, room)
+                let column: CGFloat = typing ? 46 : 0
+                let across = full.width - 16 - (typing ? column + 6 : 0)
+                let height = min(across / aspect, room)
                 let width = height * aspect
-                screen = CGRect(x: (full.width - width) / 2, y: insets.top + 6 + (room - height) / 2, width: width, height: height)
+                screen = CGRect(x: 8 + (across - width) / 2, y: insets.top + 6 + (room - height) / 2, width: width, height: height)
+                if typing { sideKeys = CGRect(x: full.width - 8 - column, y: insets.top + 6, width: column, height: room) }
                 touch = screen
                 fillsPhone = false
                 toolsHeight = 44
@@ -362,6 +371,23 @@ struct SessionView: View {
 
     // MARK: Upright
 
+    /// The keys usually above the keyboard, and the mouse buttons, down the side of the Mac.
+    @ViewBuilder private func sideKeys(_ layout: Layout) -> some View {
+        if typing, let r = layout.sideKeys {
+            VStack(spacing: 5) {
+                ModifierRow(hide: { typing = false }, vertical: true)
+                MouseButton(title: "click", button: 0)
+                    .background(Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .accessibilityLabel("Click")
+                MouseButton(title: "right", button: 1)
+                    .background(Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .accessibilityLabel("Right-click")
+            }
+            .frame(width: r.width, height: r.height)
+            .position(x: r.midX, y: r.midY)
+        }
+    }
+
     @ViewBuilder private func uprightControls(_ layout: Layout) -> some View {
         if !typing && !controlsAreHidden {
             HStack {
@@ -385,6 +411,7 @@ struct SessionView: View {
             .transition(.opacity)
         }
         trackpadPanel(layout)
+        sideKeys(layout)
     }
 
     @ViewBuilder private func trackpadPanel(_ layout: Layout) -> some View {

@@ -91,7 +91,8 @@ struct KeyboardCatcher: UIViewRepresentable {
             return host
         }()
 
-        override var inputAccessoryView: UIView? { row.view }
+        override var inputAccessoryView: UIView? { ModifierRow.onSide ? nil : row.view }
+        private var placement: NSObjectProtocol?
         var hasText: Bool { true }
         var autocorrectionType: UITextAutocorrectionType = .no
         var autocapitalizationType: UITextAutocapitalizationType = .none
@@ -107,6 +108,9 @@ struct KeyboardCatcher: UIViewRepresentable {
             super.didMoveToWindow()
             guard window != nil, !followingKeyboard else { return }
             followingKeyboard = true
+            placement = NotificationCenter.default.addObserver(forName: ModifierRow.placementChanged, object: nil, queue: .main) { [weak self] _ in
+                if self?.isFirstResponder == true { self?.reloadInputViews() }
+            }
             NotificationCenter.default.addObserver(forName: UITextInputMode.currentInputModeDidChangeNotification, object: nil,
                                                    queue: .main) { [weak self] _ in
                 KeyboardLayout.follow(language: self?.textInputMode?.primaryLanguage)
@@ -227,10 +231,31 @@ final class StickyKeys: ObservableObject {
 /// The keys an on-screen keyboard doesn't have, in the slot above it.
 struct ModifierRow: View {
     let hide: () -> Void
+    /// Down the side of the Mac instead of above the keyboard (an iPhone Duo held as a book, where iOS gives its
+    /// keyboard the whole lower page and this row would sit on the fold).
+    var vertical = false
     @ObservedObject private var sticky = StickyKeys.shared
 
+    /// Whether the row is down the side (SessionView) rather than above the keyboard: the keyboard's view then has
+    /// none.
+    static var onSide = false {
+        didSet { if onSide != oldValue { NotificationCenter.default.post(name: placementChanged, object: nil) } }
+    }
+    static let placementChanged = Notification.Name("HengeKeyRowPlacementChanged")
+
     var body: some View {
-        HStack(spacing: 5) {
+        if vertical {
+            VStack(spacing: 5) { keys }
+        } else {
+            HStack(spacing: 5) { keys }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .frame(height: Self.height)
+        }
+    }
+
+    @ViewBuilder private var keys: some View {
+        Group {
             HeldKey(label: "esc", code: Keys.escape)
             HeldKey(label: "tab", code: Keys.tab)
             modifier("⌃", Keys.control, "Control")
@@ -249,9 +274,6 @@ struct ModifierRow: View {
             }
             .accessibilityLabel("Hide keyboard")
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 6)
-        .frame(height: Self.height)
     }
 
     /// Slimmer on an iPhone Duo's inner screen, where held as a book the keyboard, this row and the trackpad share
