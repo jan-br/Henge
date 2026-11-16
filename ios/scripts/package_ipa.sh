@@ -6,6 +6,14 @@
 # with the user's own certificate and keeps the entitlements it can.
 # --trollstore strips the entitlements TrollStore bans under PPL/TXM.
 set -e
+# ci-debug: dump the reserved-region API and stop.
+SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+U="$SDK/System/Library/Frameworks/UIKit.framework/Headers"
+echo "=== DEBUG region header"; grep -v '^\s*$' "$U/UIViewReservedRegion.h" | grep -vE '^#import|^//'
+echo "=== DEBUG UIView.h mentions"; grep -n -i -B2 -A4 "reservedRegion" "$U/UIView.h"
+echo "=== DEBUG swiftui"; for f in $(find "$SDK/System/Library/Frameworks/SwiftUI.framework" "$SDK/System/Library/Frameworks/SwiftUICore.framework" -name 'arm64e-apple-ios.swiftinterface' 2>/dev/null); do echo "-- $f"; grep -n -iE "reservedRegion|ReservedRegion|onHingeChange" "$f" | head -40; done
+echo "=== DEBUG uikit swift overlay"; find "$SDK/System/Library/Frameworks/UIKit.framework" -name '*.swiftinterface' | head -2 | xargs grep -n -i "reservedRegion" | head -20
+exit 1
 IOS="$(cd "$(dirname "$0")/.." && pwd)"
 TROLLSTORE=false
 [ "$1" = "--trollstore" ] && TROLLSTORE=true
