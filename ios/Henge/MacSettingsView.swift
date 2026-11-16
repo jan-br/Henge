@@ -170,14 +170,16 @@ struct MacSettingsView: View {
         var choices = presets.map(\.choice) + ["fit", "custom"]
         if !fitIsWide { choices.append("wide") }
         if Device.isPad { choices += ["retina", "performance"] }
-        let current = choices.contains(mac.effectiveScreenChoice) ? mac.effectiveScreenChoice : "fit"
+        // An older "w1280" shows as the scale it is.
+        let stored = Device.scalePercent(of: mac.effectiveScreenChoice).map { "s\($0)" } ?? mac.effectiveScreenChoice
+        let current = choices.contains(stored) ? stored : "fit"
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Looks like").font(.system(size: 16))
+                Text("Scale").font(.system(size: 16))
                 Spacer()
-                Picker("Looks like", selection: Binding(get: { current }, set: { setScreenChoice($0) })) {
-                    ForEach(presets, id: \.choice) { p in Text("\(p.width) × \(p.height)").tag(p.choice) }
-                    Text("\(fit.width) × \(fit.height) (fits this \(Device.name))").tag("fit")
+                Picker("Scale", selection: Binding(get: { current }, set: { setScreenChoice($0) })) {
+                    Text("100% (fits this \(Device.name))").tag("fit")
+                    ForEach(presets, id: \.choice) { p in Text("\(p.percent)%").tag(p.choice) }
                     if !fitIsWide { Text("1920 × 1080 (16:9)").tag("wide") }
                     if Device.isPad {
                         Text("Retina").tag("retina")
@@ -216,7 +218,7 @@ struct MacSettingsView: View {
                 Text("Off leaves a strip at the right for the time, battery and Wi-Fi, with Henge's controls under them.")
                     .font(.system(size: 13)).foregroundStyle(Desk.dim)
             }
-            Text("Renders \(mac.screen.width) × \(mac.screen.height). The fit and the sizes above it follow the screen this Mac starts on. Changes apply the next time this Mac starts\(InstantResume.hasSave(for: mac) ? "; its saved session will not be resumed" : "").")
+            Text("Looks like \(Device.looksLike(for: mac).width) × \(Device.looksLike(for: mac).height)\((mac.sharp ?? false) ? ", renders \(mac.screen.width) × \(mac.screen.height)" : "") here. A scale is of the screen this Mac starts on, so it keeps its shape on either screen and either way up. Changes apply the next time this Mac starts\(InstantResume.hasSave(for: mac) ? "; its saved session will not be resumed" : "").")
                 .font(.system(size: 13)).foregroundStyle(Desk.dim)
         }
         .padding(17)
