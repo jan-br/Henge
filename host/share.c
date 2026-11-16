@@ -63,6 +63,32 @@ char *hv_share_take_clipboard(void) {
     return text;
 }
 
+/* ---- the keyboard layout ---- (under clip_mu, woken by clip_cond like the clipboard) */
+
+static char *kb_layout;        /* the input source macOS should use */
+static unsigned long kb_seq;
+static char *keymap;           /* what the helper says each key types on macOS's layout now */
+static unsigned long keymap_seq;
+
+void hv_share_set_keyboard_layout(const char *id) {
+    pthread_mutex_lock(&clip_mu);
+    if (!(kb_layout && id && !strcmp(kb_layout, id))) {
+        free(kb_layout);
+        kb_layout = id && *id ? strdup(id) : NULL;
+        kb_seq++;
+        pthread_cond_broadcast(&clip_cond);
+    }
+    pthread_mutex_unlock(&clip_mu);
+}
+
+char *hv_share_copy_keymap(unsigned long *seq) {
+    pthread_mutex_lock(&clip_mu);
+    char *text = keymap && keymap_seq != *seq ? strdup(keymap) : NULL;
+    *seq = keymap_seq;
+    pthread_mutex_unlock(&clip_mu);
+    return text;
+}
+
 long hv_share_agent_seen(void) {
     pthread_mutex_lock(&clip_mu);
     long ago = agent_seen ? (long)(time(NULL) - agent_seen) : -1;
@@ -707,6 +733,45 @@ static int clipboard_put(Conn *c, Request *r) {
     return respond_empty(c, r, 204, "No Content");
 }
 
+/* GET ?since=N waits up to 25 s for a newer keyboard layout than N; the body is its input source ID. */
+static int keyboard_get(Conn *c, Request *r) {
+    if (body_discard(c, r) != 0) return -1;
+    unsigned long since = 0;
+    const char *q = strstr(r->query, "since=");
+    if (q) since = strtoul(q + 6, NULL, 10);
+    struct timespec until;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    until.tv_sec = now.tv_sec + 25;
+    until.tv_nsec = now.tv_usec * 1000;
+    pthread_mutex_lock(&clip_mu);
+    agent_seen = time(NULL);
+    while (kb_seq <= since && pthread_cond_timedwait(&clip_cond, &clip_mu, &until) != ETIMEDOUT) {}
+    agent_seen = time(NULL);
+    unsigned long seq = kb_seq;
+    char *id = seq > since && kb_layout ? strdup(kb_layout) : NULL;
+    pthread_mutex_unlock(&clip_mu);
+    char headers[64];
+    snprintf(headers, sizeof headers, "X-Henge-Seq: %lu\r\n", seq);
+    int rc = id ? respond(c, r, 200, "OK", headers, id, strlen(id)) : respond(c, r, 204, "No Content", headers, NULL, 0);
+    free(id);
+    return rc;
+}
+
+/* The helper's key table for macOS's current layout. */
+static int keymap_put(Conn *c, Request *r) {
+    size_t len = 0;
+    char *text = body_small(c, r, &len);
+    if (!text) return -1;
+    pthread_mutex_lock(&clip_mu);
+    free(keymap);
+    keymap = text;
+    keymap_seq++;
+    agent_seen = time(NULL);
+    pthread_mutex_unlock(&clip_mu);
+    return respond_empty(c, r, 204, "No Content");
+}
+
 static int serve_henge(Conn *c, Request *r) {
     const char *what = r->path + strlen("/.henge/");
     if (!strcmp(what, "install") && !strcmp(r->method, "GET")) {
@@ -721,6 +786,8 @@ static int serve_henge(Conn *c, Request *r) {
     if (!strcmp(what, "agent") && !strcmp(r->method, "GET")) return serve_agent(c, r);
     if (!strcmp(what, "clipboard") && !strcmp(r->method, "GET")) return clipboard_get(c, r);
     if (!strcmp(what, "clipboard") && !strcmp(r->method, "PUT")) return clipboard_put(c, r);
+    if (!strcmp(what, "keyboard") && !strcmp(r->method, "GET")) return keyboard_get(c, r);
+    if (!strcmp(what, "keymap") && !strcmp(r->method, "PUT")) return keymap_put(c, r);
     if (body_discard(c, r) != 0) return -1;
     return respond_empty(c, r, 404, "Not Found");
 }

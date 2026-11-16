@@ -99,6 +99,25 @@ struct KeyboardCatcher: UIViewRepresentable {
         var smartQuotesType: UITextSmartQuotesType = .no
         var smartDashesType: UITextSmartDashesType = .no
 
+        /// macOS's layout follows the on-screen keyboard's language, now and as it is switched.
+        private var followingKeyboard = false
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil, !followingKeyboard else { return }
+            followingKeyboard = true
+            NotificationCenter.default.addObserver(forName: UITextInputMode.currentInputModeDidChangeNotification, object: nil,
+                                                   queue: .main) { [weak self] _ in
+                KeyboardLayout.follow(language: self?.textInputMode?.primaryLanguage)
+            }
+        }
+
+        override func becomeFirstResponder() -> Bool {
+            let became = super.becomeFirstResponder()
+            if became { KeyboardLayout.follow(language: textInputMode?.primaryLanguage) }
+            return became
+        }
+
         func insertText(_ text: String) {
             guard !HardwareKeys.keyJustPressed else { return }
             for c in text { Keys.type(c) }
@@ -165,6 +184,12 @@ enum Keys {
     }
 
     static func type(_ c: Character) {
+        // Through macOS's layout when the helper has said what it types (KeyboardLayout.swift); Return and Tab are
+        // the same keys everywhere.
+        if c != "\n", c != "\t", let strokes = KeyMap.strokes(for: c) {
+            KeyMap.send(strokes)
+            return
+        }
         if let code = letters[c] { press(code) }
         else if let lower = c.lowercased().first, let code = letters[lower] { press(code, shifted: true) }
         else if let code = plain[c] { press(code) }

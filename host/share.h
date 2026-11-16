@@ -15,5 +15,11 @@ void hv_share_set_clipboard(const char *text);
 char *hv_share_take_clipboard(void);
 /* Seconds since the helper in macOS was last heard from, or -1 if it never has been. */
 long hv_share_agent_seen(void);
+/* The keyboard layout macOS should use (an input source ID such as "com.apple.keylayout.German"), for the
+   helper to select. NULL or "" leaves macOS as it is. */
+void hv_share_set_keyboard_layout(const char *id);
+/* The key table the helper last sent (what each key types on macOS's current layout, tools/henge-agent.m), as a
+   malloc'd string, if it is newer than *seq; *seq is updated. NULL if nothing is new. */
+char *hv_share_copy_keymap(unsigned long *seq);
 
 #endif

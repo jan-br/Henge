@@ -1,6 +1,8 @@
 // Runs inside macOS on a Henge virtual Mac, as a LaunchAgent. It keeps the clipboard in step with the device,
-// and keeps the shared folder mounted. It talks to host/share.c at 10.0.2.4, which only exists inside Henge.
+// keeps the shared folder mounted, and keeps macOS's keyboard layout the device's. It talks to host/share.c at
+// 10.0.2.4, which only exists inside Henge.
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -101,6 +103,117 @@ static void checkClipboard(void) {
     });
 }
 
+// ---- the keyboard layout ----
+
+// What each key types on macOS's layout now, for Henge to type text with (Keys.type): a first line
+// "layout\t<input source ID>\t<ANSI|ISO|JIS>", then one line per character: "<char>\t<vk> <mods>[ <vk> <mods>]",
+// mods 1 for Shift and 2 for Option, two pairs for a dead key and the key after it. Fewest modifiers win.
+static NSString *keymapText(void) {
+    TISInputSourceRef source = TISCopyCurrentKeyboardLayoutInputSource();
+    if (!source) return nil;
+    CFDataRef data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData);
+    NSString *sourceID = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+    if (!data) {
+        CFRelease(source);
+        return nil;
+    }
+    const UCKeyboardLayout *layout = (const UCKeyboardLayout *)CFDataGetBytePtr(data);
+    UInt32 kbd = LMGetKbdType();
+    PhysicalKeyboardLayoutType physical = KBGetLayoutType((SInt16)kbd);
+    NSString *shape = physical == kKeyboardISO ? @"ISO" : physical == kKeyboardJIS ? @"JIS" : @"ANSI";
+    static const UInt32 modifiers[4] = {0, shiftKey, optionKey, shiftKey | optionKey};
+    NSMutableDictionary<NSString *, NSString *> *best = [NSMutableDictionary dictionary];
+    NSMutableArray<NSArray<NSNumber *> *> *dead = [NSMutableArray array]; // vk, mods, state
+    NSString *(^translate)(UInt16, int, UInt32 *) = ^NSString *(UInt16 vk, int mods, UInt32 *state) {
+        UniChar chars[8];
+        UniCharCount length = 0;
+        if (UCKeyTranslate(layout, vk, kUCKeyActionDown, (modifiers[mods] >> 8) & 0xFF, kbd, 0, state, 8, &length, chars) != noErr) return nil;
+        return length ? [NSString stringWithCharacters:chars length:length] : @"";
+    };
+    BOOL (^printable)(NSString *) = ^BOOL(NSString *t) {
+        if (!t.length) return NO;
+        unichar first = [t characterAtIndex:0];
+        return first >= 0x20 && first != 0x7f && !(first >= 0xF700 && first <= 0xF8FF);
+    };
+    for (int mods = 0; mods < 4; mods++)
+        for (UInt16 vk = 0; vk <= 50; vk++) {
+            if (vk == 36 || vk == 48) continue; // Return and Tab
+            UInt32 state = 0;
+            NSString *t = translate(vk, mods, &state);
+            if (state) [dead addObject:@[ @(vk), @(mods), @(state) ]];
+            else if (printable(t) && !best[t]) best[t] = [NSString stringWithFormat:@"%u %d", vk, mods];
+        }
+    for (NSArray<NSNumber *> *d in dead) {
+        UInt16 dvk = d[0].unsignedShortValue;
+        int dmods = d[1].intValue;
+        for (int mods = 0; mods < 4; mods++)
+            for (UInt16 vk = 0; vk <= 50; vk++) {
+                if (vk == 36 || vk == 48) continue;
+                UInt32 state = d[2].unsignedIntValue;
+                NSString *t = translate(vk, mods, &state);
+                if (!state && printable(t) && t.length == 1 && !best[t])
+                    best[t] = [NSString stringWithFormat:@"%u %d %u %d", dvk, dmods, vk, mods];
+            }
+    }
+    CFRelease(source);
+    NSMutableString *out = [NSMutableString stringWithFormat:@"layout\t%@\t%@\n", sourceID ?: @"?", shape];
+    [best enumerateKeysAndObjectsUsingBlock:^(NSString *ch, NSString *keys, BOOL *stop) {
+        (void)stop;
+        [out appendFormat:@"%@\t%@\n", ch, keys];
+    }];
+    return out;
+}
+
+static void sendKeymap(void) {
+    NSData *data = [keymapText() dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data.length) return;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int status = 0;
+        request(@"PUT", @"/.henge/keymap", data, &status, NULL);
+    });
+}
+
+// Turns on and selects an input source, e.g. com.apple.keylayout.German. On the main thread.
+static void selectLayout(NSString *sourceID) {
+    NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID : sourceID};
+    CFArrayRef list = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+    if (!list) return;
+    if (CFArrayGetCount(list) > 0) {
+        TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(list, 0);
+        TISEnableInputSource(source);
+        TISSelectInputSource(source);
+    }
+    CFRelease(list);
+}
+
+// The layout the device asks for, as it changes (at start, whatever it has now).
+static void followKeyboard(void) {
+    unsigned long seq = 0;
+    for (;;) {
+        int status = 0;
+        unsigned long now = seq;
+        NSData *body = request(@"GET", [NSString stringWithFormat:@"/.henge/keyboard?since=%lu", seq], nil, &status, &now);
+        if (!body) {
+            sleep(5);
+            continue;
+        }
+        BOOL news = status == 200 && now != seq;
+        seq = now;
+        if (!news) continue;
+        NSString *sourceID = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding];
+        if (!sourceID.length) continue;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            selectLayout(sourceID);
+            sendKeymap(); // also sent by the change notification; this covers a layout that was already selected
+        });
+    }
+}
+
+static void layoutChanged(CFNotificationCenterRef center, void *observer, CFNotificationName name, const void *object, CFDictionaryRef info) {
+    (void)center, (void)observer, (void)name, (void)object, (void)info;
+    sendKeymap();
+}
+
 static NSString *mountPoint(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Henge"]; }
 
 // The shared folder, at ~/Henge. mount_webdav needs an empty folder it owns, and is a no-op failure if it is mounted.
@@ -122,6 +235,11 @@ int main(void) {
     @autoreleasepool {
         lastChange = NSPasteboard.generalPasteboard.changeCount;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ followDevice(); });
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ followKeyboard(); });
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(), NULL, layoutChanged,
+                                        kTISNotifySelectedKeyboardInputSourceChanged, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        sendKeymap();
         keepMounted();
         [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) { (void)timer; checkClipboard(); }];
         [NSTimer scheduledTimerWithTimeInterval:30 repeats:YES block:^(NSTimer *timer) { (void)timer; keepMounted(); }];

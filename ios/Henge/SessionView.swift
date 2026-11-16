@@ -568,7 +568,7 @@ struct SessionView: View {
                     }
                     Text(helperRunning
                          ? "Put files in Files, Henge, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
-                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S.")
+                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S. the first time; after that macOS's layout follows this \(Device.name)'s keyboard. A Mac set up with an older Henge needs it once more for that.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Lighter macOS") {
@@ -643,6 +643,7 @@ struct SessionView: View {
         var buffer = [CChar](repeating: 0, count: 256)
         JITBootstrap.releaseLingeringDebugger()
         Sharing.prepare()
+        KeyboardLayout.start(mac)
         EngineTuning.apply()
         henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
         if mac.isRetina {
