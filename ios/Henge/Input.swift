@@ -86,7 +86,7 @@ struct KeyboardCatcher: UIViewRepresentable {
             let host = UIHostingController(rootView: ModifierRow(hide: { [weak self] in self?.onHide() }))
             host.sizingOptions = []
             host.view.backgroundColor = .clear
-            host.view.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 56)
+            host.view.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: ModifierRow.height)
             host.view.autoresizingMask = .flexibleWidth
             return host
         }()
@@ -246,8 +246,12 @@ struct ModifierRow: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .frame(height: 56)
+        .frame(height: Self.height)
     }
+
+    /// Slimmer on an iPhone Duo's inner screen, where held as a book the keyboard, this row and the trackpad share
+    /// the lower page.
+    static var height: CGFloat { Device.largeScreen ? 44 : 56 }
 
     private func modifier(_ symbol: String, _ code: UInt16, _ name: String) -> some View {
         let on = sticky.down.contains(code)

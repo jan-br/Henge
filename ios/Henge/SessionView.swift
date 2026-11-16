@@ -51,6 +51,7 @@ struct SessionView: View {
     @State private var helperRunning = false
     @State private var shown = CGSize(width: 0.5, height: 0.5) // how much of the Mac's screen the zoomed view shows
     @Environment(\.scenePhase) private var scenePhase
+    @State private var hingeChanges = 0 // a new layout as an iPhone Duo folds or opens
 
 
     var body: some View {
@@ -59,8 +60,9 @@ struct SessionView: View {
             let full = CGSize(width: geo.size.width + insets.leading + insets.trailing,
                               height: geo.size.height + insets.top + insets.bottom)
             let landscape = full.width > full.height
+            let fold = Self.fold(geo, insets, hingeChanges)
             let layout = Layout(full: full, insets: insets, landscape: landscape, zoomed: zoomed, typing: typing, centre: zoomCentre, aspect: mac.aspect,
-                                strip: !Device.isPad && !(mac.fillScreen ?? true) ? Device.sideStrip : 0)
+                                strip: !Device.isPad && !(mac.fillScreen ?? true) ? Device.sideStrip : 0, fold: fold)
             ZStack(alignment: .topLeading) {
                 (landscape || zoomed ? Color.black : Desk.page)
                 // One view in every layout: it holds the layer the engine draws into.
@@ -141,7 +143,7 @@ struct SessionView: View {
                     StoppedMacView(outcome: henge_vm_exit_outcome(), reason: String(cString: henge_vm_exit_reason()),
                                    start: { bootAttempt += 1 }, close: close)
                         .frame(width: min(layout.touch.width - 32, 360))
-                        .position(x: layout.touch.midX, y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
+                        .position(x: layout.touch.midX, y: layout.card.y)
                 }
                 if let error { errorCard(error, layout) }
                 KeyboardCatcher(active: $typing).frame(width: 0, height: 0)
@@ -170,7 +172,12 @@ struct SessionView: View {
                              + "\(Int(layout.screen.width))x\(Int(layout.screen.height)), fill \(mac.fillScreen ?? true)")
             }
             .onChange(of: layout.shown) { shown = $0 }
+            .onChange(of: fold) { new in
+                HengeLog.log("session", "fold \(new.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "none") in "
+                             + "\(Int(full.width))x\(Int(full.height)), insets top \(Int(insets.top)) bottom \(Int(insets.bottom))")
+            }
         }
+        .relayoutOnHinge($hingeChanges)
         // An iPhone's large screen (iPhone Duo unfolded: regular both ways) keeps its status bar on its side too,
         // over the Mac's menu bar extras: a Mac that fills the screen hides it, one with a side strip has it there.
         .statusBarHidden(zoomed || Device.isPad || (onLargeScreen && (mac.fillScreen ?? true)))
@@ -227,22 +234,41 @@ struct SessionView: View {
 
     // MARK: Layout
 
+    /// An iPhone Duo's fold while it is partly folded (iOS 27.1's division region, margins included), in the
+    /// device's points from its top left like everything in Layout; nil when flat, closed or on any other device.
+    private static func fold(_ geo: GeometryProxy, _ insets: EdgeInsets, _ hingeChanges: Int) -> CGRect? {
+        _ = hingeChanges // read again whenever the hinge moves
+        guard #available(iOS 27.1, *) else { return nil }
+        guard let region = geo.reservedRegions(kind: .division).first else { return nil }
+        return region.frame.offsetBy(dx: insets.leading, dy: insets.top) // the reader's own space is inside the safe area
+    }
+
     /// Where everything goes, in points from the device's top left corner.
     private struct Layout {
         let screen: CGRect
         let touch: CGRect     // what is a trackpad besides the pad itself
         let fillsPhone: Bool
         let toolsY: CGFloat
+        var toolsHeight: CGFloat = 54
         let pad: CGRect
         let insets: EdgeInsets
         var barY: CGFloat?    // where the controls go in the space beside the screen, if it has room for them
         var sideX: CGFloat?   // where they go as a column, in the strip a Mac leaves at the right of a large screen
 
+        /// Where a card (stopped, error) goes: on the trackpad, or the Mac's screen when there is none.
+        var card: CGPoint {
+            let r = fillsPhone ? touch : pad.height > 0 ? pad : screen
+            return CGPoint(x: r.midX, y: r.midY)
+        }
+
         var shown: CGSize {
             CGSize(width: min(touch.width / max(screen.width, 1), 1), height: min(touch.height / max(screen.height, 1), 1))
         }
 
-        init(full: CGSize, insets: EdgeInsets, landscape: Bool, zoomed: Bool, typing: Bool, centre: CGPoint, aspect: CGFloat, strip: CGFloat) {
+        /// fold: an iPhone Duo's fold while it is partly folded, with its margins (the division reserved region), in
+        /// these points; nil when flat or on any other device.
+        init(full: CGSize, insets: EdgeInsets, landscape: Bool, zoomed: Bool, typing: Bool, centre: CGPoint, aspect: CGFloat, strip: CGFloat,
+             fold: CGRect? = nil) {
             self.insets = insets
             let big = full.height >= 600 // an iPad on its side, or a window on one
             if zoomed {
@@ -288,6 +314,24 @@ struct SessionView: View {
                 fillsPhone = true
                 toolsY = 0
                 pad = .zero
+            } else if let fold, fold.width > fold.height, fold.minY > insets.top + 100 {
+                // Upright and folded across, like a laptop (an iPhone Duo): the Mac on the upper page, and the
+                // controls, trackpad and keyboard on the lower one. Nothing to touch in the fold itself.
+                let keyboardTop = full.height - insets.bottom // with the keyboard up, its top (key row included)
+                let upperBottom = min(fold.minY, keyboardTop) - 6
+                let room = max(upperBottom - insets.top - 6, 120)
+                let height = min((full.width - 16) / aspect, room)
+                let width = height * aspect
+                screen = CGRect(x: (full.width - width) / 2, y: insets.top + 6 + (room - height) / 2, width: width, height: height)
+                touch = screen
+                fillsPhone = false
+                toolsHeight = 44
+                let lower = fold.maxY + 4
+                toolsY = lower
+                let top = typing ? lower : lower + toolsHeight + 8
+                let bottom = (typing ? keyboardTop : full.height - insets.bottom) - 6
+                // Too little room above the keyboard for a trackpad to be of use: none, rather than a sliver.
+                pad = bottom - top >= 70 ? CGRect(x: 8, y: top, width: full.width - 16, height: bottom - top) : .zero
             } else {
                 let width = full.width - 16
                 let height = width / aspect
@@ -320,17 +364,22 @@ struct SessionView: View {
                 tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
             }
             .padding(.horizontal, 22)
-            .frame(width: layout.pad.width, height: 54)
+            .frame(width: layout.pad.width, height: layout.toolsHeight)
             .background(Desk.card, in: Capsule())
             .overlay(Capsule().stroke(Desk.hairline, lineWidth: 0.5))
-            .position(x: layout.pad.midX, y: layout.toolsY + 27)
+            .position(x: layout.pad.midX, y: layout.toolsY + layout.toolsHeight / 2)
             .transition(.opacity)
         }
         trackpadPanel(layout)
     }
 
-    private func trackpadPanel(_ layout: Layout) -> some View {
+    @ViewBuilder private func trackpadPanel(_ layout: Layout) -> some View {
+        if layout.pad.height > 0 { trackpadPanelShown(layout) }
+    }
+
+    private func trackpadPanelShown(_ layout: Layout) -> some View {
         let compact = layout.pad.height < 260
+        let tiny = layout.pad.height < 160 // above the keyboard on an iPhone Duo's lower page
         return VStack(spacing: 0) {
             ZStack {
                 Trackpad()
@@ -352,7 +401,7 @@ struct SessionView: View {
                 Rectangle().fill(Desk.hairline).frame(width: 0.5)
                 MouseButton(title: "Right-click", button: 1)
             }
-            .frame(height: compact ? 50 : 70)
+            .frame(height: tiny ? 36 : compact ? 50 : 70)
         }
         .background(Desk.card)
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
@@ -513,7 +562,7 @@ struct SessionView: View {
         .padding(18)
         .frame(width: min(layout.touch.width, 390) - 32, alignment: .leading)
         .background(Desk.raised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .position(x: (layout.fillsPhone ? layout.touch.midX : layout.pad.midX), y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
+        .position(layout.card)
     }
 
     private var phase: String {
@@ -759,5 +808,16 @@ struct SessionView: View {
         }
         InstantResume.discard(for: mac) /* turned off: nothing to pick up */
         close()
+    }
+}
+
+private extension View {
+    /// Counts an iPhone Duo's hinge changes (iOS 27.1), for a layout that depends on the fold to be worked out again.
+    @ViewBuilder func relayoutOnHinge(_ changes: Binding<Int>) -> some View {
+        if #available(iOS 27.1, *) {
+            onHingeChange { _, _ in changes.wrappedValue += 1 }
+        } else {
+            self
+        }
     }
 }
